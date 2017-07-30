@@ -1,20 +1,11 @@
 import os
 import numpy as np
+from scipy.stats import uniform
+from functools import partial
 import matplotlib.pyplot as plt
-import emcee
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import (WhiteKernel, RationalQuadratic,
-                                              RBF)
-
-
-
-class MyGaussianProcessRegressor(GaussianProcessRegressor):
-    def lnlikelihood(self, theta, y=None):
-        # Update data if supplied
-        if y is not None:
-            self.y_train_ = y
-
-        return self.log_marginal_likelihood(theta=theta)
+import george
+import nestle
+import corner
 
 
 data_dir = '/home/ilya/github/shifts/data'
@@ -26,174 +17,210 @@ data21 = np.loadtxt(os.path.join(data_dir, 'mojave_kinem_comp21.txt'),
                     usecols=[5, 7])
 data26 = np.loadtxt(os.path.join(data_dir, 'mojave_kinem_comp26.txt'),
                     usecols=[5, 7])
-t_min = data9[0, 0]
+data_set = (data9, data12, data21, data26)
+component_names = ("9", "12", "21", "26")
+flux = np.loadtxt(os.path.join(data_dir, 'mojave_flux_core.txt'), usecols=[4,5])
+t_min = np.min([data[0, 0] for data in data_set])
+flux[:, 0] -= t_min
 
-
-for data in (data9, data12, data21, data26):
+for data, label in zip(data_set, component_names):
     data[:, 0] -= t_min
-    plt.plot(data[:, 0], data[:, 1])
-
-t = np.linspace(0, 12, 300)
-
-p9 = np.polyfit(data9[:, 0], data9[:, 1], 2)
-p12 = np.polyfit(data12[:, 0], data12[:, 1], 2)
-p21 = np.polyfit(data21[:, 0], data21[:, 1], 2)
-p26 = np.polyfit(data26[:, 0], data26[:, 1], 2)
-
-for data, p in zip((data9, data12, data21, data26), (p9, p12, p21, p26)):
+    plt.plot(data[:, 0], data[:, 1], label=label)
     plt.plot(data[:, 0], data[:, 1], '.k')
-    plt.plot(t, np.polyval(p, t))
+plt.legend(loc='best')
+plt.xlabel("Time from {}, years".format(t_min))
+plt.ylabel("Distance from core, mas")
+plt.tight_layout()
+plt.show()
+
+t_max = np.max([data[-1, 0] for data in data_set])
+t_fine = np.linspace(0, t_max, 500)
 
 
-def model2(p, t):
+def model(p, t):
+    """
+    Model of the trend in single component motion.
+
+    :param p:
+        Iterable of polynomial coefficient.
+    :param t:
+        Time from the common start time.
+    """
     return np.polyval(p, t)
 
 
-p0 = [1., 2., 0.1, 0.1]
-k1 = p0[0] * RationalQuadratic(length_scale=p0[1], alpha=p0[2])
-k2 = WhiteKernel(noise_level=p0[3] ** 2,
-                 noise_level_bounds=(1e-4, np.inf))
-kernel = k1 + k2
+def lnlike_single(p, t, y):
+    """
+    Log of likelihood for observed kinematics of single component.
+
+    :param p:
+        Iterable of the parameters.
+    :param t:
+        Time.
+    :param y:
+        Observed positions of component.
+    :return:
+        Log of likelihood.
+
+    :notes:
+        Model consists of per-component trend + GP & common to other components
+        GP.
+    """
+    a, tau, d = np.exp(p[:3])
+    # gp = george.GP(a * george.kernels.RationalQuadraticKernel(alpha, tau) +
+    #                george.kernels.WhiteKernel(d))
+    gp = george.GP(a * george.kernels.ExpSquaredKernel(tau) +
+                   george.kernels.WhiteKernel(d))
+
+    gp.compute(t, 0.001)
+    return gp.lnlikelihood(y - model(p[3:], t))
 
 
-gp9 = GaussianProcessRegressor(kernel=kernel, normalize_y=True,
-                               alpha=(0.1 / data9[:, 1]) ** 2,
-                               copy_X_train=False)
-# Make ``y`` dependent on parameters ``p``
-X9 = np.atleast_2d(data9[:, 0]).T
-y9 = data9[:, 1] - model2(p9, data9[:, 0])
-gp9.fit(X9, y9)
+def lnlike_common(p, data_set, models_dims):
+    """
+    Log of likelihood for observed kinematics of single component.
 
-gp12 = GaussianProcessRegressor(kernel=kernel, normalize_y=True,
-                                alpha=(0.1 / data12[:, 1]) ** 2)
-X12 = np.atleast_2d(data12[:, 0]).T
-y12 = data12[:, 1] - model2(p12, data12[:, 0])
-gp12.fit(X12, y12)
+    :param p:
+        Iterable of the parameters.
+    :param data_set:
+        Iterable of 2D numpy arrays with time and positions for each components.
+    :param models_dims:
+        Iterable of component specific number of parameters.
+    :return:
+        Log of likelihood.
+    """
+    p_common = p[:3]
+    p_others = p[3:]
+    j = 0
+    result = list()
+    for i, data in enumerate(data_set):
+        t, y = data[:, 0], data[:, 1]
+        p_component = list(p_common) + list(p_others[j: j+models_dims[i]])
+        j += models_dims[i]
+        result.append(lnlike_single(p_component, t, y))
 
-gp21 = GaussianProcessRegressor(kernel=kernel, normalize_y=True,
-                                alpha=(0.1 / data21[:, 1]) ** 2)
-X21 = np.atleast_2d(data21[:, 0]).T
-y21 = data21[:, 1] - model2(p21, data21[:, 0])
-gp21.fit(X21, y21)
-
-gp26 = GaussianProcessRegressor(kernel=kernel, normalize_y=True,
-                                alpha=(0.1 / data26[:, 1]) ** 2)
-X26 = np.atleast_2d(data26[:, 0]).T
-y26 = data26[:, 1] - model2(p26, data26[:, 0])
-gp26.fit(X26, y26)
-
-p0 = gp9.kernel_.theta
+    return sum(result)
 
 
-def lnlike(p):
-    # Update yi-th
-    global y9
-    global y12
-    global y21
-    global y26
-    y9 = data9[:, 1] - model2(p[4:7], data9[:, 0])
-    y12 = data12[:, 1] - model2(p[7:10], data12[:, 0])
-    y21 = data21[:, 1] - model2(p[10:13], data21[:, 0])
-    y26 = data26[:, 1] - model2(p[13:16], data26[:, 0])
-    return (gp9.log_marginal_likelihood(p[:4]) +
-            gp12.log_marginal_likelihood(p[:4]) +
-            gp21.log_marginal_likelihood(p[:4]) +
-            gp26.log_marginal_likelihood(p[:4])).sum()
+class _function_wrapper(object):
+    """
+    This is a hack to make the likelihood function pickleable when ``args``
+    and ``kwargs``are also included.
+    """
+    def __init__(self, f, args, kwargs):
+        self.f = f
+        self.args = args
+        self.kwargs = kwargs
+
+    def __call__(self, x):
+        try:
+            return self.f(x, *self.args, **self.kwargs)
+        except:
+            import traceback
+            print(" choose model: Exception while calling your prior pdf:")
+            print(" params:", x)
+            print(" args:", self.args)
+            print(" kwargs:", self.kwargs)
+            print(" exception:")
+            traceback.print_exc()
+            raise
 
 
-def lnprior(p):
-    # Prior on GP hyper parameters
-    if not -10 < p[0] < 10:
-        return -np.inf
-    if not -10 < p[1] < 10:
-        return -np.inf
-    if not -10 < p[2] < 10:
-        return -np.inf
-    if not -10 < p[3] < 10:
-        return -np.inf
-    # Prior on p9
-    if not -0.03 < p[4] < 0.03:
-        return -np.inf
-    if not 0.4 < p[5] < 1.2:
-        return -np.inf
-    if not 0.4 < p[6] < 1.2:
-        return -np.inf
-    # Prior on p12
-    if not -0.003 < p[7] < 0.003:
-        return -np.inf
-    if not 0.4 < p[8] < 1.4:
-        return -np.inf
-    if not -5 < p[9] < 0:
-        return -np.inf
-    # Prior on p21
-    if not -0.012 < p[10] < 0.012:
-        return -np.inf
-    if not 0.2 < p[11] < 0.6:
-        return -np.inf
-    if not 0.0 < p[12] < 3.0:
-        return -np.inf
-    # Prior on p26
-    if not -0.006 < p[13] < 0.006:
-        return -np.inf
-    if not 0.4 < p[14] < 1.2:
-        return -np.inf
-    if not 3.0 < p[15] < 10:
-        return -np.inf
-    return 0.0
+# Setting up nestle sampler
+def hypercube_full(u, ppfs):
+    assert len(u) == len(ppfs)
+    return [ppf(u_) for ppf, u_ in zip(ppfs, u)]
 
 
-def lnprob(p):
-    lp = lnprior(p)
-    if not np.isfinite(lp):
-        return -np.inf
-    return lnlike(p) + lp
+def hypercube_partial(ppfs):
+    return partial(hypercube_full, ppfs=ppfs)
 
+models_dims = (4, 2, 2, 2)
+ndim = 3 + sum(models_dims)
 
-nwalkers = 80
-ndim = 16
-sampler = emcee.EnsembleSampler(nwalkers, ndim, lnprob)
-p0 = emcee.utils.sample_ball(list(p0) + list(p9) + list(p12) + list(p21) +
-                             list(p26), [0.1, 0.1, 0.1, 0.1] +
-                             4*[0.001, 0.02, 0.1],
-                             size=nwalkers)
-p0, lnp, _ = sampler.run_mcmc(p0, 100)
-sampler.reset()
-p0, lnp, _ = sampler.run_mcmc(p0, 200)
+# Priors on common GP parameters
+ppfs = [_function_wrapper(uniform.ppf, [-10, 8], {}),
+        _function_wrapper(uniform.ppf, [-10, 9], {}),
+        _function_wrapper(uniform.ppf, [-10, 10], {})]
 
-p_map = p0[np.argmax(lnp)]
-p_map[:4] = np.exp(p_map[:4])
+# Component specific parameters priors
+for model_dim in models_dims:
+    ppfs += [_function_wrapper(uniform.ppf, [-10, 20], {}) for i in
+             range(model_dim)]
 
+hypercube = hypercube_partial(ppfs)
+lnlike = partial(lnlike_common, data_set=data_set, models_dims=models_dims)
+result = nestle.sample(loglikelihood=lnlike, prior_transform=hypercube,
+                       ndim=ndim, npoints=50, method='multi',
+                       callback=nestle.print_progress)
 
-k1 = p_map[0] * RationalQuadratic(length_scale=p_map[1], alpha=p_map[2])
-k2 = WhiteKernel(noise_level=p_map[3] ** 2,
-                 noise_level_bounds=(1e-4, np.inf))
-kernel = k1 + k2
-gp9 = GaussianProcessRegressor(kernel=kernel, normalize_y=True,
-                              alpha=(0.1 / data9[:, 1]) ** 2)
-gp9.fit(np.atleast_2d(data9[:, 0]).T, data9[:, 1] - model2(p_map[4:7],
-                                                           data9[:, 0]))
+samples = nestle.resample_equal(result.samples, result.weights)
+# Save re-weighted samples from posterior
+# np.savetxt('samples.txt', samples)
+fig = corner.corner(samples, show_titles=True, labels=ndim*['a'],
+                    quantiles=[0.16, 0.5, 0.84], title_fmt='.3f')
+fig.show()
 
-gp12 = GaussianProcessRegressor(kernel=kernel, normalize_y=True,
-                              alpha=(0.1 / data12[:, 1]) ** 2)
-gp12.fit(np.atleast_2d(data12[:, 0]).T, data12[:, 1] - model2(p_map[7:10],
-                                                              data12[:, 0]))
+component_colors = ('r', 'b', 'g', 'y')
+fig, axes = plt.subplots(1, 1)
+axes.set_ylabel("Distance, mas")
+axes.set_xlabel("Time, years")
+for i, s in enumerate(samples[np.random.randint(len(samples), size=6)]):
+    print("Plotting sample {}".format(i))
+    s_common = s[:3]
+    s_others = s[3:]
+    j = 0
+    for i, data in enumerate(data_set):
+        t, y = data[:, 0], data[:, 1]
+        s_component = list(s_common) + list(s_others[j: j+models_dims[i]])
+        j += models_dims[i]
+        gp = george.GP(np.exp(s_component[0]) *
+                       george.kernels.ExpSquaredKernel(np.exp(s_component[1])))
+        # gp = george.GP(np.exp(s[0]) * george.kernels.RationalQuadraticKernel(np.exp(s[1]), np.exp(s[2])))
+        gp.compute(t, 0.001)
+        m = gp.sample_conditional(y - model(s_component[3:], t), t_fine)
+        # axes.plot(t, m, color="#4682b4", alpha=0.25)
+        # axes.plot(t, y-model(s_component[3:], t), '.',
+        #           color=component_colors[i], alpha=0.25)
+        axes.plot(t_fine, m, color=component_colors[i], alpha=0.25)
 
-gp21 = GaussianProcessRegressor(kernel=kernel, normalize_y=True,
-                              alpha=(0.1 / data21[:, 1]) ** 2)
-gp21.fit(np.atleast_2d(data21[:, 0]).T, data21[:, 1] - model2(p_map[10:13],
-                                                              data21[:, 0]))
+fig.show()
+# Plot per-component models
+p_mean = np.mean(samples, axis=0)
+p_common = p_mean[:3]
+p_others = p_mean[3:]
+j = 0
+for i, data in enumerate(data_set):
+    t, y = data[:, 0], data[:, 1]
+    p_component = p_others[j: j + models_dims[i]]
+    j += models_dims[i]
+    # axes.plot(t_fine, model(p_component, t_fine), color=component_colors[i])
+    axes.plot(t, y - model(p_component, t), '.', color=component_colors[i])
 
-gp26 = GaussianProcessRegressor(kernel=kernel, normalize_y=True,
-                              alpha=(0.1 / data26[:, 1]) ** 2)
-gp26.fit(np.atleast_2d(data26[:, 0]).T, data26[:, 1] - model2(p_map[13:16],
-                                                              data26[:, 0]))
-
-
-for data, p, gp in zip((data9, data12, data21, data26), (p_map[4:7],
-                                                         p_map[7:10],
-                                                         p_map[10:13],
-                                                         p_map[13:16]),
-                       (gp9, gp12, gp21, gp26)):
-    plt.plot(data[:, 0], data[:, 1], '.')
-    y = gp.predict(np.atleast_2d(t).T)
-    plt.plot(t, np.polyval(p, t) + y)
+# # Plot original observed points
+# for i, data in enumerate(data_set):
+#     t, y = data[:, 0], data[:, 1]
+#     axes.plot(t, y, '.k')
+#
+# fig.show()
+#
+# # Plot wanted result
+# fig, axes = plt.subplots(1, 1)
+# axes.set_ylabel("Distance, mas")
+# axes.set_xlabel("Time, years")
+# for i, s in enumerate(samples[np.random.randint(len(samples), size=6)]):
+#     print("Plotting sample {}".format(i))
+#     s_common = s[:3]
+#     s_others = s[3:]
+#     j = 0
+#     for i, data in enumerate(data_set):
+#         t, y = data[:, 0], data[:, 1]
+#         s_component = list(s_common) + list(s_others[j: j+models_dims[i]])
+#         j += models_dims[i]
+#         gp = george.GP(np.exp(s_component[0]) *
+#                        george.kernels.ExpSquaredKernel(np.exp(s_component[1])))
+#         # gp = george.GP(np.exp(s[0]) * george.kernels.RationalQuadraticKernel(np.exp(s[1]), np.exp(s[2])))
+#         gp.compute(t, 0.001)
+#         m = gp.sample_conditional(y - model(s_component[3:], t), t_fine)
+#         # axes.plot(t, m, color="#4682b4", alpha=0.25)
+#         axes.plot(t_fine, m, color=component_colors[i], alpha=0.25)

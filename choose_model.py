@@ -12,7 +12,6 @@ from sklearn.gaussian_process.kernels import (WhiteKernel, RationalQuadratic,
                                               RBF)
 import george
 
-
 data_dir = '/home/ilya/github/shifts/data'
 data9 = np.loadtxt(os.path.join(data_dir, 'mojave_kinem_comp9.txt'),
                    usecols=[5, 7])
@@ -80,12 +79,13 @@ def hypercube_full(u, ppfs):
 def hypercube_partial(ppfs):
     return partial(hypercube_full, ppfs=ppfs)
 
-ndim = 5
+ndim = 6
 # a, tau, d
-ppfs = [_function_wrapper(sp.stats.uniform.ppf, [-10, 8], {}),
-        _function_wrapper(sp.stats.uniform.ppf, [-10, 7], {}),
+ppfs = [_function_wrapper(sp.stats.uniform.ppf, [-10, 20], {}),
+        _function_wrapper(sp.stats.uniform.ppf, [-10, 20], {}),
         _function_wrapper(sp.stats.uniform.ppf, [-10, 20], {}),
         # _function_wrapper(sp.stats.uniform.ppf, [-10, 20], {}),
+        _function_wrapper(sp.stats.uniform.ppf, [-10, 20], {}),
         _function_wrapper(sp.stats.uniform.ppf, [-10, 20], {}),
         _function_wrapper(sp.stats.uniform.ppf, [-10, 20], {})]
 hypercube = hypercube_partial(ppfs)
