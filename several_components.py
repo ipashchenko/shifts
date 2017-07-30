@@ -25,13 +25,13 @@ flux[:, 0] -= t_min
 
 for data, label in zip(data_set, component_names):
     data[:, 0] -= t_min
-    plt.plot(data[:, 0], data[:, 1], label=label)
-    plt.plot(data[:, 0], data[:, 1], '.k')
-plt.legend(loc='best')
-plt.xlabel("Time from {}, years".format(t_min))
-plt.ylabel("Distance from core, mas")
-plt.tight_layout()
-plt.show()
+#     plt.plot(data[:, 0], data[:, 1], label=label)
+#     plt.plot(data[:, 0], data[:, 1], '.k')
+# plt.legend(loc='best')
+# plt.xlabel("Time from {}, years".format(t_min))
+# plt.ylabel("Distance from core, mas")
+# plt.tight_layout()
+# plt.show()
 
 t_max = np.max([data[-1, 0] for data in data_set])
 t_fine = np.linspace(0, t_max, 500)
@@ -66,14 +66,16 @@ def lnlike_single(p, t, y):
         Model consists of per-component trend + GP & common to other components
         GP.
     """
-    a, tau, d = np.exp(p[:3])
+    a_common, tau_common = np.exp(p[:2])
+    a, tau, d = np.exp(p[2:5])
     # gp = george.GP(a * george.kernels.RationalQuadraticKernel(alpha, tau) +
     #                george.kernels.WhiteKernel(d))
-    gp = george.GP(a * george.kernels.ExpSquaredKernel(tau) +
+    gp = george.GP(a_common * george.kernels.ExpSquaredKernel(tau_common) +
+                   a * george.kernels.ExpSquaredKernel(tau) +
                    george.kernels.WhiteKernel(d))
 
     gp.compute(t, 0.001)
-    return gp.lnlikelihood(y - model(p[3:], t))
+    return gp.lnlikelihood(y - model(p[5:], t))
 
 
 def lnlike_common(p, data_set, models_dims):
@@ -89,14 +91,15 @@ def lnlike_common(p, data_set, models_dims):
     :return:
         Log of likelihood.
     """
-    p_common = p[:3]
-    p_others = p[3:]
+    p_common = p[:2]
+    p_others = p[2:]
     j = 0
     result = list()
     for i, data in enumerate(data_set):
         t, y = data[:, 0], data[:, 1]
-        p_component = list(p_common) + list(p_others[j: j+models_dims[i]])
-        j += models_dims[i]
+        # Adding 3 means per-component SE+WN
+        p_component = list(p_common) + list(p_others[j: j+3+models_dims[i]])
+        j += 3+models_dims[i]
         result.append(lnlike_single(p_component, t, y))
 
     return sum(result)
@@ -135,16 +138,20 @@ def hypercube_full(u, ppfs):
 def hypercube_partial(ppfs):
     return partial(hypercube_full, ppfs=ppfs)
 
-models_dims = (4, 2, 2, 2)
-ndim = 3 + sum(models_dims)
+# 2 means linear
+models_dims = (2, 2, 2, 2)
+ndim = 2 + 3*len(models_dims) + sum(models_dims)
 
 # Priors on common GP parameters
 ppfs = [_function_wrapper(uniform.ppf, [-10, 8], {}),
-        _function_wrapper(uniform.ppf, [-10, 9], {}),
-        _function_wrapper(uniform.ppf, [-10, 10], {})]
+        _function_wrapper(uniform.ppf, [-10, 9], {})]
 
 # Component specific parameters priors
 for model_dim in models_dims:
+    # For each component long-scale SE + independent white noise
+    ppfs += [_function_wrapper(uniform.ppf, [-10, 20], {}),
+             _function_wrapper(uniform.ppf, [-1, 10], {}),
+             _function_wrapper(uniform.ppf, [-10, 10], {})]
     ppfs += [_function_wrapper(uniform.ppf, [-10, 20], {}) for i in
              range(model_dim)]
 
@@ -162,40 +169,40 @@ fig = corner.corner(samples, show_titles=True, labels=ndim*['a'],
 fig.show()
 
 component_colors = ('r', 'b', 'g', 'y')
-fig, axes = plt.subplots(1, 1)
-axes.set_ylabel("Distance, mas")
-axes.set_xlabel("Time, years")
-for i, s in enumerate(samples[np.random.randint(len(samples), size=6)]):
-    print("Plotting sample {}".format(i))
-    s_common = s[:3]
-    s_others = s[3:]
-    j = 0
-    for i, data in enumerate(data_set):
-        t, y = data[:, 0], data[:, 1]
-        s_component = list(s_common) + list(s_others[j: j+models_dims[i]])
-        j += models_dims[i]
-        gp = george.GP(np.exp(s_component[0]) *
-                       george.kernels.ExpSquaredKernel(np.exp(s_component[1])))
-        # gp = george.GP(np.exp(s[0]) * george.kernels.RationalQuadraticKernel(np.exp(s[1]), np.exp(s[2])))
-        gp.compute(t, 0.001)
-        m = gp.sample_conditional(y - model(s_component[3:], t), t_fine)
-        # axes.plot(t, m, color="#4682b4", alpha=0.25)
-        # axes.plot(t, y-model(s_component[3:], t), '.',
-        #           color=component_colors[i], alpha=0.25)
-        axes.plot(t_fine, m, color=component_colors[i], alpha=0.25)
-
-fig.show()
-# Plot per-component models
-p_mean = np.mean(samples, axis=0)
-p_common = p_mean[:3]
-p_others = p_mean[3:]
-j = 0
-for i, data in enumerate(data_set):
-    t, y = data[:, 0], data[:, 1]
-    p_component = p_others[j: j + models_dims[i]]
-    j += models_dims[i]
-    # axes.plot(t_fine, model(p_component, t_fine), color=component_colors[i])
-    axes.plot(t, y - model(p_component, t), '.', color=component_colors[i])
+# fig, axes = plt.subplots(1, 1)
+# axes.set_ylabel("Distance, mas")
+# axes.set_xlabel("Time, years")
+# for i, s in enumerate(samples[np.random.randint(len(samples), size=6)]):
+#     print("Plotting sample {}".format(i))
+#     s_common = s[:3]
+#     s_others = s[3:]
+#     j = 0
+#     for i, data in enumerate(data_set):
+#         t, y = data[:, 0], data[:, 1]
+#         s_component = list(s_common) + list(s_others[j: j+models_dims[i]])
+#         j += models_dims[i]
+#         gp = george.GP(np.exp(s_component[0]) *
+#                        george.kernels.ExpSquaredKernel(np.exp(s_component[1])))
+#         # gp = george.GP(np.exp(s[0]) * george.kernels.RationalQuadraticKernel(np.exp(s[1]), np.exp(s[2])))
+#         gp.compute(t, 0.001)
+#         m = gp.sample_conditional(y - model(s_component[3:], t), t_fine)
+#         # axes.plot(t, m, color="#4682b4", alpha=0.25)
+#         # axes.plot(t, y-model(s_component[3:], t), '.',
+#         #           color=component_colors[i], alpha=0.25)
+#         axes.plot(t_fine, m, color=component_colors[i], alpha=0.25)
+#
+# fig.show()
+# # Plot per-component models
+# p_mean = np.mean(samples, axis=0)
+# p_common = p_mean[:3]
+# p_others = p_mean[3:]
+# j = 0
+# for i, data in enumerate(data_set):
+#     t, y = data[:, 0], data[:, 1]
+#     p_component = p_others[j: j + models_dims[i]]
+#     j += models_dims[i]
+#     # axes.plot(t_fine, model(p_component, t_fine), color=component_colors[i])
+#     axes.plot(t, y - model(p_component, t), '.', color=component_colors[i])
 
 # # Plot original observed points
 # for i, data in enumerate(data_set):
