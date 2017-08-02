@@ -3,6 +3,7 @@ import george
 from functools import partial
 import scipy.optimize as op
 from scipy.linalg import cholesky, cho_solve
+from sklearn import preprocessing
 
 
 # Define the objective function (negative log-likelihood in this case).
@@ -105,6 +106,8 @@ def loocv_poly(y, t, yerr=None, max_p=3, do_weight_loocv=False):
         for i in range(len(y)):
             y_ = np.delete(y, i)
             t_ = np.delete(t, i)
+
+
             if yerr is not None:
                 w = 1/np.delete(yerr, i)
                 if do_weight_loocv:
@@ -116,8 +119,11 @@ def loocv_poly(y, t, yerr=None, max_p=3, do_weight_loocv=False):
                 yerr_test = 1.
             y_test = y[i]
             t_test = t[i]
-            p = np.polyfit(t_, y_, p, w=w)
-            y_pred = np.polyval(p, t_test)
+            mm_scaler_t = preprocessing.MinMaxScaler()
+            mm_scaler_y = preprocessing.MinMaxScaler()
+            p = np.polyfit(mm_scaler_t.fit_transform(t_) - 0.5,
+                           mm_scaler_y.fit_transform(y_), p, w=w)
+            y_pred = mm_scaler_y.inverse_transform(np.polyval(p, mm_scaler_t.transform(t_test) - 0.5))
             cv_score.append((y_test - y_pred)/yerr_test)
         cv_score = np.array(cv_score)
         cv_score = np.mean((cv_score**2))
