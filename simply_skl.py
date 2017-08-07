@@ -7,12 +7,14 @@ from functools import partial
 from sklearn import preprocessing
 import matplotlib.pyplot as plt
 # from utils import partial_predict, optimize_gp
-from utils import loocv_poly
+from utils import loocv_poly, cv_ridge_sklearn
 
 
-max_p = 3
+max_p = 5
+k = None
 # Find all sources
 data_dir = '/home/ilya/github/shifts/data/all'
+save_dir = '/home/ilya/github/shifts/data/all/new'
 files = glob.glob(os.path.join(data_dir, "*kinem.txt"))
 sources = list()
 for fn in files:
@@ -22,17 +24,18 @@ sources = list(set(sources))
 # sources = ['1226+023']
 
 for source in sources:
+    print source
     n_min_epochs = 7
-    data_dir = '/home/ilya/github/shifts/data/errors'
+    data_dir = '/home/ilya/github/shifts/data/all'
     files = glob.glob(os.path.join(data_dir, "{}*kinem.txt".format(source)))
-    column_names = ["time", "position"]
+    column_names = ["time", "position", "error"]
     data_set = list()
     comp_ids = list()
     for fn in files:
         _, fn_ = os.path.split(fn)
         comp_id = fn_.split('.')[2].split('_')[0][4:]
         df = pd.read_table(fn, delim_whitespace=True, names=column_names,
-                           engine='python', usecols=[0, 1])
+                           engine='python', usecols=[0, 1, 2])
         if len(df) >= n_min_epochs:
             data_set.append(df)
             comp_ids.append(comp_id)
@@ -46,7 +49,7 @@ for source in sources:
     axes.set_title(source)
     fig.tight_layout()
     fig.show()
-    fig.savefig(os.path.join(data_dir, '{}_raw.png'.format(source)), dpi=300)
+    fig.savefig(os.path.join(save_dir, '{}_raw.png'.format(source)), dpi=300)
     plt.close(fig)
 
     data_set = sorted(data_set, key=lambda df: len(df), reverse=True)
@@ -55,22 +58,16 @@ for source in sources:
     # fig, axes = plt.subplots(1, 1)
     # This for plotting data with best fitted polynomials
     fig_, axes_ = plt.subplots(1, 1)
-    powers = dict()
     for i, df in enumerate(data_set):
         mm_scaler_t = preprocessing.MinMaxScaler()
         mm_scaler_y = preprocessing.MinMaxScaler()
         # TODO: Here optionally choose the order of polynom
-        cv_scores = loocv_poly(df['position'].values, df['time'].values,
-                               max_p=max_p)
-        p_power = np.argmin(cv_scores)
-        powers[comp_ids[i]] = p_power+1
-        p = np.polyfit(mm_scaler_t.fit_transform(df['time'])-0.5,
-                       mm_scaler_y.fit_transform(df['position']), p_power+1)
-                       # w=df['flux'])
-        print(p)
-        trend = mm_scaler_y.inverse_transform(np.polyval(p, mm_scaler_t.transform(df['time'])-0.5))
         tt = np.linspace(df['time'].values[0], df['time'].values[-1], 300)
-        trend_tt = mm_scaler_y.inverse_transform(np.polyval(p, mm_scaler_t.transform(tt)-0.5))
+        trend, trend_tt = cv_ridge_sklearn(df['time'].values,
+                                           df['position'].values,
+                                           yerr=df['error'].values,
+                                           max_p=max_p,
+                                           t_plot=tt, k=k)
         axes_.plot(tt, trend_tt, '-', label=comp_ids[i])
         axes_.plot(df['time'], df['position'], '.', label="")
         df['position'] -= trend
@@ -79,7 +76,7 @@ for source in sources:
         # axes.plot(df['time'], df['position'], '.')
     axes_.legend(loc='best')
     fig_.show()
-    fig_.savefig(os.path.join(data_dir, '{}_raw_fitted.png'.format(source)), dpi=300)
+    fig_.savefig(os.path.join(save_dir, '{}_raw_fitted_ridge.png'.format(source)), dpi=300)
     plt.close(fig_)
 
     # Average residuals from fit
@@ -125,11 +122,7 @@ for source in sources:
     axes.set_title(source)
     fig.tight_layout()
     fig.show()
-    powers_plot = [powers[i] for i in sorted(powers.keys(), key=lambda x: int(x))]
-    powers_plot_string = ""
-    for s in powers_plot:
-        powers_plot_string += str(s)
-    fig.savefig(os.path.join(data_dir, '{}_best_{}d.png'.format(source, powers_plot_string)), dpi=300)
+    fig.savefig(os.path.join(save_dir, '{}_average.png'.format(source)), dpi=300)
     plt.close(fig)
 
 

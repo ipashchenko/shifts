@@ -101,12 +101,13 @@ def loocv_poly(y, t, yerr=None, max_p=3, do_weight_loocv=False):
         Iterable of LOOCV scores that are MSE.
     """
     cv_scores = list()
-    for p in range(1, max_p+1):
+    for p_cur in range(1, max_p+1):
+        print("Checking p = {}".format(p_cur))
         cv_score = list()
         for i in range(len(y)):
+            print("i = {}".format(i))
             y_ = np.delete(y, i)
             t_ = np.delete(t, i)
-
 
             if yerr is not None:
                 w = 1/np.delete(yerr, i)
@@ -117,13 +118,19 @@ def loocv_poly(y, t, yerr=None, max_p=3, do_weight_loocv=False):
             else:
                 w = None
                 yerr_test = 1.
-            y_test = y[i]
-            t_test = t[i]
+            y_test = np.array(y[i])
+            t_test = np.array(t[i])
+            print("y_test = {}, t_test = {}".format(y_test, t_test))
             mm_scaler_t = preprocessing.MinMaxScaler()
             mm_scaler_y = preprocessing.MinMaxScaler()
-            p = np.polyfit(mm_scaler_t.fit_transform(t_) - 0.5,
-                           mm_scaler_y.fit_transform(y_), p, w=w)
-            y_pred = mm_scaler_y.inverse_transform(np.polyval(p, mm_scaler_t.transform(t_test) - 0.5))
+            transformed_t_ = mm_scaler_t.fit_transform(t_.reshape(-1, 1))[:, 0]
+            transformed_t_ -= 0.5
+            transformed_y_ = mm_scaler_y.fit_transform(y_.reshape(-1, 1))[:, 0]
+            p = np.polyfit(transformed_t_, transformed_y_, p_cur, w=w)
+            transformed_t_test = mm_scaler_t.transform(t_test.reshape(1, -1))[:, 0]
+            transformed_t_test -= 0.5
+            transformed_y_pred = np.polyval(p, transformed_t_test).reshape(1, -1)
+            y_pred = mm_scaler_y.inverse_transform(transformed_y_pred)[0, 0]
             cv_score.append((y_test - y_pred)/yerr_test)
         cv_score = np.array(cv_score)
         cv_score = np.mean((cv_score**2))
@@ -131,3 +138,445 @@ def loocv_poly(y, t, yerr=None, max_p=3, do_weight_loocv=False):
 
     return cv_scores
 
+
+def cv_ridge_sklearn(t, y, yerr=None, max_p=5, do_weight_loocv=False, k=None,
+                      t_plot=None):
+    from sklearn.linear_model import (
+        LinearRegression, RANSACRegressor, Ridge)
+    from sklearn import preprocessing
+    from sklearn.pipeline import Pipeline
+    import matplotlib.pyplot as plt
+    from sklearn.model_selection import LeaveOneOut, KFold, GridSearchCV
+    from pprint import pprint
+    from time import time
+
+    estimator = Ridge()
+    lw = 2
+    if t_plot is None:
+        x_plot = np.linspace(t.min(), t.max(), 500)
+    else:
+        x_plot = t_plot
+    # cv = LeaveOneOut()
+    if k is None:
+        k = len(t) // 2
+        k = min(k, 10)
+        k = max(k, 5)
+    cv = KFold(k, random_state=42, shuffle=False)
+    pipeline = Pipeline([('scale', preprocessing.MinMaxScaler(feature_range=(-1, 1))),
+                         ('poly', preprocessing.PolynomialFeatures()),
+                         ('est', estimator)])
+    parameters = {'poly__degree': np.arange(1, max_p+1),
+                  'est__alpha': np.logspace(-12, 2, 50)}
+    if yerr is not None:
+        weights = 1/yerr
+        weights = weights/(np.sum(weights)/len(weights))
+        fit_params = {'est__sample_weight': weights}
+    else:
+        fit_params = {}
+    grid_search = GridSearchCV(pipeline, parameters, cv=cv, n_jobs=-1,
+                               verbose=1, scoring="neg_mean_squared_error",
+                               refit=True, fit_params=fit_params)
+    # print("Performing grid search...")
+    # print("pipeline:", [name for name, _ in pipeline.steps])
+    # print("parameters:")
+    # pprint(parameters)
+    t0 = time()
+    cv_result = grid_search.fit(np.atleast_2d(t).T, y).cv_results_
+    # id_best = np.where(cv_result['rank_test_score'] == 1)[0][0]
+    # best_p = np.arange(1, max_p+1)[id_best]
+    # best_p_upper = cv_result['mean_test_score'][id_best] - cv_result['std_test_score'][id_best]
+    # id_best = np.where(cv_result['mean_test_score'] - best_p_upper < 0)[0][-1]
+    # best_p = np.arange(1, max_p + 1)[id_best]
+    #
+    # # print("done in %0.3fs" % (time() - t0))
+    # print("Best p = {}".format(best_p))
+
+    # print("Best score: %0.7f" % grid_search.best_score_)
+    print("Best parameters set:")
+    best_parameters = grid_search.best_estimator_.get_params()
+    for param_name in sorted(parameters.keys()):
+        print("\t%s: %r" % (param_name, best_parameters[param_name]))
+    # FIXME: With refit=True in GS i can just make prediction with GS
+    pipeline.set_params(**best_parameters)
+    pipeline.fit(np.atleast_2d(t).T, y)
+    y_plot = pipeline.predict(x_plot[:, np.newaxis])
+    y_pred = pipeline.predict(np.atleast_2d(t).T)
+    # print "Setted params"
+    # print pipeline.get_params()
+    # plt.plot(x_plot, y_plot, color=colors[name], linestyle=linestyle[name],
+    #          linewidth=lw, label='%s' % (name))
+    # plt.plot(x_plot, y_plot, linewidth=lw)
+    # plt.plot(t, y, '.', linewidth=lw)
+    # legend = plt.legend(loc='upper left', frameon=False)
+    return y_pred, y_plot
+
+
+def cv_lasso_sklearn(t, y, yerr=None, max_p=5, do_weight_loocv=False, k=None,
+                     t_plot=None):
+    from sklearn.linear_model import Lasso
+    from sklearn import preprocessing
+    from sklearn.pipeline import Pipeline
+    import matplotlib.pyplot as plt
+    from sklearn.model_selection import LeaveOneOut, KFold, GridSearchCV
+    from pprint import pprint
+    from time import time
+
+    estimator = Lasso()
+    lw = 2
+    if t_plot is None:
+        x_plot = np.linspace(t.min(), t.max(), 500)
+    else:
+        x_plot = t_plot
+    # cv = LeaveOneOut()
+    if k is None:
+        k = len(t) // 2
+        k = min(k, 10)
+        k = max(k, 5)
+    cv = KFold(k, random_state=42, shuffle=False)
+    pipeline = Pipeline([('scale', preprocessing.MinMaxScaler(feature_range=(-1, 1))),
+                         ('poly', preprocessing.PolynomialFeatures()),
+                         ('est', estimator)])
+    parameters = {'poly__degree': np.arange(1, max_p+1),
+                  'est__alpha': np.logspace(-12, 2, 50)}
+    if yerr is not None:
+        fit_params = {'est__sample_weight': 1/yerr**2}
+    else:
+        fit_params = {}
+    grid_search = GridSearchCV(pipeline, parameters, cv=cv, n_jobs=-1,
+                               verbose=1, scoring="neg_mean_squared_error",
+                               refit=True, fit_params=fit_params)
+    # print("Performing grid search...")
+    # print("pipeline:", [name for name, _ in pipeline.steps])
+    # print("parameters:")
+    # pprint(parameters)
+    t0 = time()
+    cv_result = grid_search.fit(np.atleast_2d(t).T, y).cv_results_
+    # id_best = np.where(cv_result['rank_test_score'] == 1)[0][0]
+    # best_p = np.arange(1, max_p+1)[id_best]
+    # best_p_upper = cv_result['mean_test_score'][id_best] - cv_result['std_test_score'][id_best]
+    # id_best = np.where(cv_result['mean_test_score'] - best_p_upper < 0)[0][-1]
+    # best_p = np.arange(1, max_p + 1)[id_best]
+    #
+    # # print("done in %0.3fs" % (time() - t0))
+    # print("Best p = {}".format(best_p))
+
+    # print("Best score: %0.7f" % grid_search.best_score_)
+    print("Best parameters set:")
+    best_parameters = grid_search.best_estimator_.get_params()
+    for param_name in sorted(parameters.keys()):
+        print("\t%s: %r" % (param_name, best_parameters[param_name]))
+    # FIXME: With refit=True in GS i can just make prediction with GS
+    pipeline.set_params(**best_parameters)
+    pipeline.fit(np.atleast_2d(t).T, y)
+    y_plot = pipeline.predict(x_plot[:, np.newaxis])
+    y_pred = pipeline.predict(np.atleast_2d(t).T)
+    # print "Setted params"
+    # print pipeline.get_params()
+    # plt.plot(x_plot, y_plot, color=colors[name], linestyle=linestyle[name],
+    #          linewidth=lw, label='%s' % (name))
+    # plt.plot(x_plot, y_plot, linewidth=lw)
+    # plt.plot(t, y, '.', linewidth=lw)
+    # legend = plt.legend(loc='upper left', frameon=False)
+    return y_pred, y_plot
+
+
+def cv_elastic_sklearn(t, y, yerr=None, max_p=5, do_weight_loocv=False, k=None,
+                       t_plot=None):
+    from sklearn.linear_model import ElasticNet
+    from sklearn import preprocessing
+    from sklearn.pipeline import Pipeline
+    import matplotlib.pyplot as plt
+    from sklearn.model_selection import LeaveOneOut, KFold, GridSearchCV
+    from pprint import pprint
+    from time import time
+
+    estimator = ElasticNet()
+    lw = 2
+    if t_plot is None:
+        x_plot = np.linspace(t.min(), t.max(), 500)
+    else:
+        x_plot = t_plot
+    # cv = LeaveOneOut()
+    if k is None:
+        k = len(t) // 2
+        k = min(k, 10)
+        k = max(k, 5)
+    cv = KFold(k, random_state=42, shuffle=False)
+    pipeline = Pipeline([('scale', preprocessing.MinMaxScaler(feature_range=(-1, 1))),
+                         ('poly', preprocessing.PolynomialFeatures()),
+                         ('est', estimator)])
+    parameters = {'poly__degree': np.arange(1, max_p+1),
+                  'est__alpha': np.logspace(-3, 2, 20),
+                  'est__l1_ratio': np.linspace(0.01, 0.99, 15)}
+    if yerr is not None:
+        fit_params = {'est__sample_weight': 1/yerr**2}
+    else:
+        fit_params = {}
+    grid_search = GridSearchCV(pipeline, parameters, cv=cv, n_jobs=-1,
+                               verbose=1, scoring="neg_mean_squared_error",
+                               refit=True, fit_params=fit_params)
+    # print("Performing grid search...")
+    # print("pipeline:", [name for name, _ in pipeline.steps])
+    # print("parameters:")
+    # pprint(parameters)
+    t0 = time()
+    cv_result = grid_search.fit(np.atleast_2d(t).T, y).cv_results_
+    # id_best = np.where(cv_result['rank_test_score'] == 1)[0][0]
+    # best_p = np.arange(1, max_p+1)[id_best]
+    # best_p_upper = cv_result['mean_test_score'][id_best] - cv_result['std_test_score'][id_best]
+    # id_best = np.where(cv_result['mean_test_score'] - best_p_upper < 0)[0][-1]
+    # best_p = np.arange(1, max_p + 1)[id_best]
+    #
+    # # print("done in %0.3fs" % (time() - t0))
+    # print("Best p = {}".format(best_p))
+
+    # print("Best score: %0.7f" % grid_search.best_score_)
+    print("Best parameters set:")
+    best_parameters = grid_search.best_estimator_.get_params()
+    for param_name in sorted(parameters.keys()):
+        print("\t%s: %r" % (param_name, best_parameters[param_name]))
+    # FIXME: With refit=True in GS i can just make prediction with GS
+    pipeline.set_params(**best_parameters)
+    pipeline.fit(np.atleast_2d(t).T, y)
+    y_plot = pipeline.predict(x_plot[:, np.newaxis])
+    y_pred = pipeline.predict(np.atleast_2d(t).T)
+    # print "Setted params"
+    # print pipeline.get_params()
+    # plt.plot(x_plot, y_plot, color=colors[name], linestyle=linestyle[name],
+    #          linewidth=lw, label='%s' % (name))
+    # plt.plot(x_plot, y_plot, linewidth=lw)
+    # plt.plot(t, y, '.', linewidth=lw)
+    # legend = plt.legend(loc='upper left', frameon=False)
+    return y_pred, y_plot
+
+
+def cv_svr_sklearn(t, y, yerr=None, kernel='poly', max_p=5,
+                   do_weight_loocv=False, k=None, t_plot=None, epsilon=0.1):
+    from sklearn.svm import SVR
+    from sklearn import preprocessing
+    from sklearn.pipeline import Pipeline
+    import matplotlib.pyplot as plt
+    from sklearn.model_selection import KFold, GridSearchCV
+    from time import time
+
+    estimator = SVR(kernel=kernel, tol=0.001, cache_size=1000,
+                    max_iter=100000, epsilon=epsilon, verbose=False)
+    lw = 2
+    if t_plot is None:
+        x_plot = np.linspace(t.min(), t.max(), 500)
+    else:
+        x_plot = t_plot
+    # cv = LeaveOneOut()
+    if k is None:
+        k = len(t) // 2
+        k = min(k, 10)
+        k = max(k, 5)
+    cv = KFold(k, random_state=42, shuffle=False)
+    pipeline = Pipeline([('scale', preprocessing.MinMaxScaler(feature_range=(-1, 1))),
+                         ('est', estimator)])
+    parameters = {'est__C': np.logspace(-3, 3, 20),
+                  'est__gamma': np.logspace(-3, 3, 20)}
+    if kernel == 'poly':
+        parameters.update({'est__degree': np.arange(1, max_p+1)})
+    if yerr is not None:
+        fit_params = {'est__sample_weight': 1 / yerr ** 2}
+    else:
+        fit_params = {}
+    grid_search = GridSearchCV(pipeline, parameters, cv=cv, n_jobs=-1,
+                               scoring="neg_mean_squared_error",
+                               refit=True, fit_params=fit_params)
+    # print("Performing grid search...")
+    # print("pipeline:", [name for name, _ in pipeline.steps])
+    # print("parameters:")
+    # pprint(parameters)
+    t0 = time()
+    cv_result = grid_search.fit(np.atleast_2d(t).T, y).cv_results_
+    # id_best = np.where(cv_result['rank_test_score'] == 1)[0][0]
+    # best_p = np.arange(1, max_p+1)[id_best]
+    # best_p_upper = cv_result['mean_test_score'][id_best] - cv_result['std_test_score'][id_best]
+    # id_best = np.where(cv_result['mean_test_score'] - best_p_upper < 0)[0][-1]
+    # best_p = np.arange(1, max_p + 1)[id_best]
+    #
+    # # print("done in %0.3fs" % (time() - t0))
+    # print("Best p = {}".format(best_p))
+
+    # print("Best score: %0.7f" % grid_search.best_score_)
+    print("Best parameters set:")
+    best_parameters = grid_search.best_estimator_.get_params()
+    for param_name in sorted(parameters.keys()):
+        print("\t%s: %r" % (param_name, best_parameters[param_name]))
+    # FIXME: With refit=True in GS i can just make prediction with GS
+    pipeline.set_params(**best_parameters)
+    pipeline.fit(np.atleast_2d(t).T, y)
+    y_plot = pipeline.predict(x_plot[:, np.newaxis])
+    y_pred = pipeline.predict(np.atleast_2d(t).T)
+    # print "Setted params"
+    # print pipeline.get_params()
+    # plt.plot(x_plot, y_plot, color=colors[name], linestyle=linestyle[name],
+    #          linewidth=lw, label='%s' % (name))
+    # plt.plot(x_plot, y_plot, linewidth=lw)
+    # plt.plot(t, y, '.', linewidth=lw)
+    # legend = plt.legend(loc='upper left', frameon=False)
+    return y_pred, y_plot
+
+
+def cv_nusvr_sklearn(t, y, yerr=None, kernel='poly', max_p=5,
+                     do_weight_loocv=False, k=None, t_plot=None):
+    from sklearn.svm import NuSVR
+    from sklearn import preprocessing
+    from sklearn.pipeline import Pipeline
+    import matplotlib.pyplot as plt
+    from sklearn.model_selection import KFold, GridSearchCV
+    from time import time
+
+    estimator = NuSVR(kernel=kernel, tol=0.001, cache_size=1000,
+                      max_iter=100000)
+    lw = 2
+    if t_plot is None:
+        x_plot = np.linspace(t.min(), t.max(), 500)
+    else:
+        x_plot = t_plot
+    # cv = LeaveOneOut()
+    if k is None:
+        k = len(t) // 2
+        k = min(k, 10)
+        k = max(k, 5)
+    cv = KFold(k, random_state=42, shuffle=False)
+    pipeline = Pipeline([('scale', preprocessing.MinMaxScaler(feature_range=(-1, 1))),
+                         ('est', estimator)])
+    parameters = {'est__C': np.logspace(-3, 3, 10),
+                  'est__gamma': np.logspace(-3, 3, 10),
+                  'est__nu': np.linspace(0.1, 0.9, 10)}
+    if kernel == 'poly':
+        parameters.update({'est__degree': np.arange(1, max_p+1)})
+    if yerr is not None:
+        fit_params = {'est__sample_weight': 1/yerr**2}
+    else:
+        fit_params = {}
+    grid_search = GridSearchCV(pipeline, parameters, cv=cv, n_jobs=-1,
+                               scoring="neg_mean_squared_error",
+                               refit=True, fit_params=fit_params)
+    # print("Performing grid search...")
+    # print("pipeline:", [name for name, _ in pipeline.steps])
+    # print("parameters:")
+    # pprint(parameters)
+    t0 = time()
+    cv_result = grid_search.fit(np.atleast_2d(t).T, y).cv_results_
+    # id_best = np.where(cv_result['rank_test_score'] == 1)[0][0]
+    # best_p = np.arange(1, max_p+1)[id_best]
+    # best_p_upper = cv_result['mean_test_score'][id_best] - cv_result['std_test_score'][id_best]
+    # id_best = np.where(cv_result['mean_test_score'] - best_p_upper < 0)[0][-1]
+    # best_p = np.arange(1, max_p + 1)[id_best]
+    #
+    # # print("done in %0.3fs" % (time() - t0))
+    # print("Best p = {}".format(best_p))
+
+    # print("Best score: %0.7f" % grid_search.best_score_)
+    print("Best parameters set:")
+    best_parameters = grid_search.best_estimator_.get_params()
+    for param_name in sorted(parameters.keys()):
+        print("\t%s: %r" % (param_name, best_parameters[param_name]))
+    # FIXME: With refit=True in GS i can just make prediction with GS
+    pipeline.set_params(**best_parameters)
+    pipeline.fit(np.atleast_2d(t).T, y)
+    y_plot = pipeline.predict(x_plot[:, np.newaxis])
+    y_pred = pipeline.predict(np.atleast_2d(t).T)
+    # print "Setted params"
+    # print pipeline.get_params()
+    # plt.plot(x_plot, y_plot, color=colors[name], linestyle=linestyle[name],
+    #          linewidth=lw, label='%s' % (name))
+    # plt.plot(x_plot, y_plot, linewidth=lw)
+    # plt.plot(t, y, '.', linewidth=lw)
+    # legend = plt.legend(loc='upper left', frameon=False)
+    return y_pred, y_plot
+
+
+def cv_kridge_sklearn(t, y, yerr=None, kernel='rbf', do_weight_loocv=False,
+                      k=None, t_plot=None):
+    from sklearn.kernel_ridge import KernelRidge
+    from sklearn import preprocessing
+    from sklearn.pipeline import Pipeline
+    import matplotlib.pyplot as plt
+    from sklearn.model_selection import KFold, GridSearchCV
+    from sklearn.gaussian_process.kernels import RBF, RationalQuadratic
+
+    from time import time
+
+    estimator = KernelRidge()
+    lw = 2
+    if t_plot is None:
+        x_plot = np.linspace(t.min(), t.max(), 500)
+    else:
+        x_plot = t_plot
+    # cv = LeaveOneOut()
+    if k is None:
+        k = len(t) // 2
+        k = min(k, 10)
+        k = max(k, 5)
+    cv = KFold(k, random_state=42, shuffle=False)
+    pipeline = Pipeline([('scale', preprocessing.MinMaxScaler(feature_range=(-1, 1))),
+                         ('est', estimator)])
+    parameters = {'est__alpha': np.logspace(-5, 2, 10),
+                  'est__gamma': np.logspace(-9, 2, 10)}
+    if kernel == 'rbf':
+        parameters.update({'est__kernel':
+                               [RBF(l) for l in np.logspace(-1, 1, 20)]})
+    if kernel == 'rq':
+        parameters.update({'est__kernel':
+                               [RationalQuadratic(l, a)
+                                for l in np.logspace(-1, 1, 20)
+                                for a in np.logspace(-3, 2, 20)]})
+    if yerr is not None:
+        fit_params = {'est__sample_weight': 1/yerr**2}
+    else:
+        fit_params = {}
+    grid_search = GridSearchCV(pipeline, parameters, cv=cv, n_jobs=-1,
+                               verbose=1, scoring="neg_mean_squared_error",
+                               refit=True, fit_params=fit_params)
+    # print("Performing grid search...")
+    # print("pipeline:", [name for name, _ in pipeline.steps])
+    # print("parameters:")
+    # pprint(parameters)
+    t0 = time()
+    cv_result = grid_search.fit(np.atleast_2d(t).T, y).cv_results_
+    # id_best = np.where(cv_result['rank_test_score'] == 1)[0][0]
+    # best_p = np.arange(1, max_p+1)[id_best]
+    # best_p_upper = cv_result['mean_test_score'][id_best] - cv_result['std_test_score'][id_best]
+    # id_best = np.where(cv_result['mean_test_score'] - best_p_upper < 0)[0][-1]
+    # best_p = np.arange(1, max_p + 1)[id_best]
+    #
+    # # print("done in %0.3fs" % (time() - t0))
+    # print("Best p = {}".format(best_p))
+
+    # print("Best score: %0.7f" % grid_search.best_score_)
+    print("Best parameters set:")
+    best_parameters = grid_search.best_estimator_.get_params()
+    for param_name in sorted(parameters.keys()):
+        print("\t%s: %r" % (param_name, best_parameters[param_name]))
+    # FIXME: With refit=True in GS i can just make prediction with GS
+    pipeline.set_params(**best_parameters)
+    pipeline.fit(np.atleast_2d(t).T, y)
+    y_plot = pipeline.predict(x_plot[:, np.newaxis])
+    y_pred = pipeline.predict(np.atleast_2d(t).T)
+    # print "Setted params"
+    # print pipeline.get_params()
+    # plt.plot(x_plot, y_plot, color=colors[name], linestyle=linestyle[name],
+    #          linewidth=lw, label='%s' % (name))
+    # plt.plot(x_plot, y_plot, linewidth=lw)
+    # plt.plot(t, y, '.', linewidth=lw)
+    # legend = plt.legend(loc='upper left', frameon=False)
+    return y_pred, y_plot
+
+
+def choose_simply_best(cv_result):
+    """
+    Among results of the ``GridSearchCV`` choose the simplest one (measured by
+    parameter ``degree``) that is close to the best within one sigma.
+
+    :param cv_result:
+        Result of `GridSearchCV`` with ``est__degree`` being one of the
+        optimized parameters.
+    :return:
+
+    """
+    pass
