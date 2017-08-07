@@ -2,31 +2,34 @@ import os
 import glob
 import numpy as np
 import pandas as pd
-from scipy.stats import uniform
-from functools import partial
+from scipy.stats import pearsonr
 from sklearn import preprocessing
-import matplotlib.pyplot as plt
-# from utils import partial_predict, optimize_gp
-from utils import loocv_poly, cv_ridge_sklearn
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from matplotlib.figure import Figure
+from utils import cv_ridge_sklearn
 
 
-max_p = 5
+# FIXME: Use max_p high but find the lowest power which has CV within sigma of
+# the best CV
+max_p = 3
+
+# This means choose ``k`` adaptively - not large then 10 but not smaller then 4
 k = None
 # Find all sources
-data_dir = '/home/ilya/github/shifts/data/all'
-save_dir = '/home/ilya/github/shifts/data/all/new'
+data_dir = '/home/ilya/github/shifts/data/errors'
+save_dir = '/home/ilya/github/shifts/data/errors'
 files = glob.glob(os.path.join(data_dir, "*kinem.txt"))
 sources = list()
 for fn in files:
     _, fn_ = os.path.split(fn)
     sources.append(fn_.split('.')[0])
 sources = list(set(sources))
-# sources = ['1226+023']
+sources = ['0300+470']
 
 for source in sources:
     print source
-    n_min_epochs = 7
-    data_dir = '/home/ilya/github/shifts/data/all'
+    n_min_epochs = 8
+    data_dir = '/home/ilya/github/shifts/data/errors'
     files = glob.glob(os.path.join(data_dir, "{}*kinem.txt".format(source)))
     column_names = ["time", "position", "error"]
     data_set = list()
@@ -35,30 +38,39 @@ for source in sources:
         _, fn_ = os.path.split(fn)
         comp_id = fn_.split('.')[2].split('_')[0][4:]
         df = pd.read_table(fn, delim_whitespace=True, names=column_names,
-                           engine='python', usecols=[0, 1, 2])
+                           engine='python', usecols=[0, 1, 2], skiprows=2)
         if len(df) >= n_min_epochs:
             data_set.append(df)
             comp_ids.append(comp_id)
 
-    fig, axes = plt.subplots(1, 1)
+    # This make figure wo opening window
+    fig = Figure()
+    axes = fig.add_subplot(1, 1, 1)
+    canvas = FigureCanvas(fig)
+
     for comp_id, data in zip(comp_ids, data_set):
         axes.plot(data['time'], data['position'], '.', label=comp_id)
     axes.set_xlabel("Time, years")
     axes.set_ylabel("Component distance, mas")
-    axes.legend(loc="best")
+    axes.legend(loc="upper left")
     axes.set_title(source)
     fig.tight_layout()
-    fig.show()
-    fig.savefig(os.path.join(save_dir, '{}_raw.png'.format(source)), dpi=300)
-    plt.close(fig)
-
-    data_set = sorted(data_set, key=lambda df: len(df), reverse=True)
+    # fig.show()
+    # fig.savefig(os.path.join(save_dir, '{}_raw.png'.format(source)), dpi=300)
+    canvas.print_figure(os.path.join(save_dir, '{}_raw.png'.format(source)), dpi=300)
+    # plt.close(fig)
+    #
+    data_set = sorted(data_set, key=lambda df: np.min(df['time'].values))
 
     # This for plotting average deviations
     # fig, axes = plt.subplots(1, 1)
     # This for plotting data with best fitted polynomials
-    fig_, axes_ = plt.subplots(1, 1)
+    fig = Figure()
+    axes = fig.add_subplot(1, 1, 1)
+    canvas = FigureCanvas(fig)
+
     for i, df in enumerate(data_set):
+        df.loc[df['error'] == 0, 'error'] = 0.01
         mm_scaler_t = preprocessing.MinMaxScaler()
         mm_scaler_y = preprocessing.MinMaxScaler()
         # TODO: Here optionally choose the order of polynom
@@ -68,27 +80,28 @@ for source in sources:
                                            yerr=df['error'].values,
                                            max_p=max_p,
                                            t_plot=tt, k=k)
-        axes_.plot(tt, trend_tt, '-', label=comp_ids[i])
-        axes_.plot(df['time'], df['position'], '.', label="")
+        axes.plot(tt, trend_tt, '-', label=comp_ids[i])
+        axes.plot(df['time'], df['position'], '.', label="")
         df['position'] -= trend
         data_set[i] = df
         # axes.plot(df['time'], df['position'])
         # axes.plot(df['time'], df['position'], '.')
-    axes_.legend(loc='best')
-    fig_.show()
-    fig_.savefig(os.path.join(save_dir, '{}_raw_fitted_ridge.png'.format(source)), dpi=300)
-    plt.close(fig_)
+    axes.legend(loc='upper left')
+    canvas.print_figure(os.path.join(save_dir, '{}_raw_fitted_ridge.png'.format(source)), dpi=300)
 
     # Average residuals from fit
     data = data_set[0]
     for i, df in enumerate(data_set[1:]):
-        data = data.join(df.set_index('time'), on='time', lsuffix='_{}'.format(i+1),
-                         rsuffix='_{}'.format(i+2))
+        data = data.join(df.set_index('time'), how='outer', on='time',
+                         lsuffix='_{}'.format(i+1), rsuffix='_{}'.format(i+2))
 
     adata = np.array(data)
 
     # Plot averaged detrended positions vs Core Flux
-    fig, axes = plt.subplots(1, 1)
+    fig = Figure()
+    axes = fig.add_subplot(1, 1, 1)
+    canvas = FigureCanvas(fig)
+
     minmax_scaler_shift = preprocessing.MinMaxScaler()
     mean_deviations = np.nanmean(adata[:, 1:], axis=1)
     axes.plot(adata[:, 0], minmax_scaler_shift.fit_transform(mean_deviations), '.g')
@@ -121,9 +134,7 @@ for source in sources:
     axes.set_ylabel("Averaged deviations from trend, mas", color='g')
     axes.set_title(source)
     fig.tight_layout()
-    fig.show()
-    fig.savefig(os.path.join(save_dir, '{}_average.png'.format(source)), dpi=300)
-    plt.close(fig)
+    canvas.print_figure(os.path.join(save_dir, '{}_average.png'.format(source)), dpi=300)
 
 
     # Fit shifts
