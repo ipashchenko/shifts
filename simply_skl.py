@@ -24,7 +24,8 @@ for fn in files:
     _, fn_ = os.path.split(fn)
     sources.append(fn_.split('.')[0])
 sources = list(set(sources))
-sources = ['0300+470']
+# sources = ['0300+470']
+sources = ['2209+236']
 
 for source in sources:
     print source
@@ -94,7 +95,7 @@ for source in sources:
     for i, df in enumerate(data_set[1:]):
         data = data.join(df.set_index('time'), how='outer', on='time',
                          lsuffix='_{}'.format(i+1), rsuffix='_{}'.format(i+2))
-
+    data = data.sort_values('time')
     adata = np.array(data)
 
     # Plot averaged detrended positions vs Core Flux
@@ -103,6 +104,7 @@ for source in sources:
     canvas = FigureCanvas(fig)
 
     minmax_scaler_shift = preprocessing.MinMaxScaler()
+    # FIXME: Use weights in averaging
     mean_deviations = np.nanmean(adata[:, 1:], axis=1)
     axes.plot(adata[:, 0], minmax_scaler_shift.fit_transform(mean_deviations), '.g')
     axes.plot(adata[:, 0], minmax_scaler_shift.transform(mean_deviations), 'g')
