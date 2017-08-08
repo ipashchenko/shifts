@@ -24,8 +24,8 @@ for fn in files:
     _, fn_ = os.path.split(fn)
     sources.append(fn_.split('.')[0])
 sources = list(set(sources))
-# sources = ['0300+470']
-sources = ['2209+236']
+sources = ['0300+470']
+# sources = ['2209+236']
 
 for source in sources:
     print source
@@ -96,7 +96,7 @@ for source in sources:
         data = data.join(df.set_index('time'), how='outer', on='time',
                          lsuffix='_{}'.format(i+1), rsuffix='_{}'.format(i+2))
     data = data.sort_values('time')
-    adata = np.array(data)
+    # adata = np.array(data)
 
     # Plot averaged detrended positions vs Core Flux
     fig = Figure()
@@ -105,9 +105,23 @@ for source in sources:
 
     minmax_scaler_shift = preprocessing.MinMaxScaler()
     # FIXME: Use weights in averaging
-    mean_deviations = np.nanmean(adata[:, 1:], axis=1)
-    axes.plot(adata[:, 0], minmax_scaler_shift.fit_transform(mean_deviations), '.g')
-    axes.plot(adata[:, 0], minmax_scaler_shift.transform(mean_deviations), 'g')
+    # mean_deviations = np.nanmean(adata[:, 1:], axis=1)
+    n_positions = len(data.columns) // 2
+    positions = [data[data.columns[2 * i + 1]] for i in range(n_positions)]
+    positions = np.vstack(positions).T
+    positions = np.ma.masked_array(positions, np.isnan(positions))
+    errors = [data[data.columns[2 * i + 2]] for i in range(n_positions)]
+    errors = np.vstack(errors).T
+    errors = np.ma.masked_array(errors, np.isnan(errors))
+    mean_deviations_w = np.ma.average(positions, axis=1, weights=1./errors)
+    mean_deviations = np.ma.average(positions, axis=1)
+
+    # mean_deviations = np.average(adata[:, 1:], axis=1)
+    axes.plot(data['time'], minmax_scaler_shift.fit_transform(mean_deviations), '.g')
+    axes.plot(data['time'], minmax_scaler_shift.transform(mean_deviations), 'g')
+    axes.plot(data['time'], minmax_scaler_shift.transform(mean_deviations_w), '.b')
+    axes.plot(data['time'], minmax_scaler_shift.transform(mean_deviations_w),
+              'b', label="weighted ave")
 
     flux = pd.read_table(os.path.join(data_dir,
                                       '{}.u1.core_flux.txt'.format(source)),
@@ -118,7 +132,8 @@ for source in sources:
     # axes.plot(flux[:, 0][idx], preprocessing.minmax_scale(flux[:, 1][idx]), '.r')
     axes2 = axes.twinx()
     minmax_scaler_flux = preprocessing.MinMaxScaler()
-    axes2.plot(flux["time"], minmax_scaler_flux.fit_transform(flux["flux"]), 'r')
+    axes2.plot(flux["time"], minmax_scaler_flux.fit_transform(flux["flux"]),
+               'r', lw=2)
     axes2.plot(flux["time"], minmax_scaler_flux.transform(flux["flux"]), '.r')
     axes.set_xlabel("Time")
     axes2.set_ylabel("Flux, Jy", color='r')
@@ -135,6 +150,7 @@ for source in sources:
 
     axes.set_ylabel("Averaged deviations from trend, mas", color='g')
     axes.set_title(source)
+    axes.legend(loc="best")
     fig.tight_layout()
     canvas.print_figure(os.path.join(save_dir, '{}_average.png'.format(source)), dpi=300)
 
