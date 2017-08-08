@@ -8,7 +8,7 @@ import BeautifulSoup
 import urllib2
 import fnmatch
 import pandas as pd
-from collections import OrderedDict
+from utils import OrderedDefaultDict
 
 
 mojave_bands = ['x', 'y', 'j', 'u', 'l18', 'l20', 'l21', 'l22']
@@ -164,21 +164,6 @@ def convert_fracyear_to_datetime(frac_year):
                                        base).total_seconds() * rem)
     return "{}_{}_{}".format(result.year, str(result.month).zfill(2),
                              str(result.day).zfill(2))
-
-
-class OrderedDefaultDict(OrderedDict):
-    """
-    From https://stackoverflow.com/a/18809585
-    """
-    def __init__(self, default_factory=None, *args, **kwargs):
-        super(OrderedDefaultDict, self).__init__(*args, **kwargs)
-        self.default_factory = default_factory
-
-    def __missing__(self, key):
-        if self.default_factory is None:
-            raise KeyError(key)
-        val = self[key] = self.default_factory()
-        return val
 
 
 if __name__ == '__main__':

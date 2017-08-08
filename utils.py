@@ -4,6 +4,7 @@ from functools import partial
 import scipy.optimize as op
 from scipy.linalg import cholesky, cho_solve
 from sklearn import preprocessing
+from collections import OrderedDict
 
 
 # Define the objective function (negative log-likelihood in this case).
@@ -595,15 +596,16 @@ def cv_kridge_sklearn(t, y, yerr=None, kernel='rbf', do_weight_loocv=False,
     return y_pred, y_plot
 
 
-def choose_simply_best(cv_result):
+class OrderedDefaultDict(OrderedDict):
     """
-    Among results of the ``GridSearchCV`` choose the simplest one (measured by
-    parameter ``degree``) that is close to the best within one sigma.
-
-    :param cv_result:
-        Result of `GridSearchCV`` with ``est__degree`` being one of the
-        optimized parameters.
-    :return:
-
+    From https://stackoverflow.com/a/18809585
     """
-    pass
+    def __init__(self, default_factory=None, *args, **kwargs):
+        super(OrderedDefaultDict, self).__init__(*args, **kwargs)
+        self.default_factory = default_factory
+
+    def __missing__(self, key):
+        if self.default_factory is None:
+            raise KeyError(key)
+        val = self[key] = self.default_factory()
+        return val
