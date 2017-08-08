@@ -139,40 +139,39 @@ def loocv_poly(y, t, yerr=None, max_p=3, do_weight_loocv=False):
     return cv_scores
 
 
-def cv_ridge_sklearn(t, y, yerr=None, max_p=5, do_weight_loocv=False, k=None,
-                      t_plot=None):
-    from sklearn.linear_model import (
-        LinearRegression, RANSACRegressor, Ridge)
+# FIXME: Use max_p high but find the lowest power which has CV within sigma of
+# the best CV
+def cv_ridge_sklearn(t, y, yerr=None, max_p=5, k=None, t_plot=None):
+    from sklearn.linear_model import Ridge
     from sklearn import preprocessing
     from sklearn.pipeline import Pipeline
-    import matplotlib.pyplot as plt
-    from sklearn.model_selection import LeaveOneOut, KFold, GridSearchCV
-    from pprint import pprint
-    from time import time
+    from sklearn.model_selection import KFold, GridSearchCV
 
     estimator = Ridge()
-    lw = 2
+
     if t_plot is None:
         x_plot = np.linspace(t.min(), t.max(), 500)
     else:
         x_plot = t_plot
-    # cv = LeaveOneOut()
+
     if k is None:
         k = len(t) // 2
         k = min(k, 10)
-        k = max(k, 5)
+        k = max(k, 4)
     cv = KFold(k, random_state=42, shuffle=False)
     pipeline = Pipeline([('scale', preprocessing.MinMaxScaler(feature_range=(-1, 1))),
                          ('poly', preprocessing.PolynomialFeatures()),
                          ('est', estimator)])
     parameters = {'poly__degree': np.arange(1, max_p+1),
                   'est__alpha': np.logspace(-12, 2, 50)}
+    # Choose weights that their sum is len(data) but value ~ 1/error
     if yerr is not None:
         weights = 1/yerr
         weights = weights/(np.sum(weights)/len(weights))
         fit_params = {'est__sample_weight': weights}
     else:
         fit_params = {}
+
     grid_search = GridSearchCV(pipeline, parameters, cv=cv, n_jobs=-1,
                                verbose=1, scoring="neg_mean_squared_error",
                                refit=True, fit_params=fit_params)
@@ -180,8 +179,7 @@ def cv_ridge_sklearn(t, y, yerr=None, max_p=5, do_weight_loocv=False, k=None,
     # print("pipeline:", [name for name, _ in pipeline.steps])
     # print("parameters:")
     # pprint(parameters)
-    t0 = time()
-    cv_result = grid_search.fit(np.atleast_2d(t).T, y).cv_results_
+    cv_result = grid_search.fit(np.atleast_2d(t).T, y)
     # id_best = np.where(cv_result['rank_test_score'] == 1)[0][0]
     # best_p = np.arange(1, max_p+1)[id_best]
     # best_p_upper = cv_result['mean_test_score'][id_best] - cv_result['std_test_score'][id_best]
@@ -196,19 +194,48 @@ def cv_ridge_sklearn(t, y, yerr=None, max_p=5, do_weight_loocv=False, k=None,
     best_parameters = grid_search.best_estimator_.get_params()
     for param_name in sorted(parameters.keys()):
         print("\t%s: %r" % (param_name, best_parameters[param_name]))
-    # FIXME: With refit=True in GS i can just make prediction with GS
+    # FIXME: With refit=True in GS i can just make prediction with GS but
+    # i need simplest parameters (``degree``) with close CV-score actually
+    best_parameters = find_simply_best(cv_result)
+    print("Simplest and close to best is: ")
+    print(best_parameters)
     pipeline.set_params(**best_parameters)
     pipeline.fit(np.atleast_2d(t).T, y)
     y_plot = pipeline.predict(x_plot[:, np.newaxis])
     y_pred = pipeline.predict(np.atleast_2d(t).T)
-    # print "Setted params"
-    # print pipeline.get_params()
-    # plt.plot(x_plot, y_plot, color=colors[name], linestyle=linestyle[name],
-    #          linewidth=lw, label='%s' % (name))
-    # plt.plot(x_plot, y_plot, linewidth=lw)
-    # plt.plot(t, y, '.', linewidth=lw)
-    # legend = plt.legend(loc='upper left', frameon=False)
+
     return y_pred, y_plot
+
+
+def find_simply_best(cv_result):
+    """
+    Among results of CV find simplest parameters (i.e. with low ``poly_degree``)
+    that close to the best one within it's std.
+
+    :param cv_result:
+        Result of ``sklearn.model_selection._search.GridSearchCV`` fit.
+    :return:
+        Dictionary with best parameters.
+    """
+    best_params = cv_result.best_params_
+    ix_best = np.where(cv_result.cv_results_['rank_test_score'] == 1)[0][0]
+
+    best_p = cv_result.cv_results_['param_poly__degree'][ix_best]
+
+    best_score = cv_result.cv_results_['mean_test_score'][ix_best]
+    best_score_std = cv_result.cv_results_['std_test_score'][ix_best]
+    crit_value = best_score - best_score_std
+
+    ix_candidates = np.where(cv_result.cv_results_['mean_test_score'] >
+                             crit_value)[0]
+    degree_candidates = cv_result.cv_results_['param_poly__degree'][ix_candidates]
+    ix_smaller_degree = degree_candidates < best_p
+    if np.any(ix_smaller_degree):
+        simplest_candidates = ix_candidates[ix_smaller_degree]
+        ix_simplest = simplest_candidates[np.argmax(cv_result.cv_results_['mean_test_score'][simplest_candidates])]
+        best_params = cv_result.cv_results_['params'][ix_simplest]
+
+    return best_params
 
 
 def cv_lasso_sklearn(t, y, yerr=None, max_p=5, do_weight_loocv=False, k=None,
