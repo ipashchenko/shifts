@@ -91,7 +91,10 @@ for source in sources:
     canvas.print_figure(os.path.join(save_dir, '{}_raw_fitted_ridge.png'.format(source)), dpi=300)
 
     # Average residuals from fit
-    data = data_set[0]
+    try:
+        data = data_set[0]
+    except IndexError:
+        continue
     for i, df in enumerate(data_set[1:]):
         data = data.join(df.set_index('time'), how='outer', on='time',
                          lsuffix='_{}'.format(i+1), rsuffix='_{}'.format(i+2))
